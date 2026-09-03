@@ -22,11 +22,11 @@ const int IN3 = 27;
 const int IN4 = 32;
 
 // Parâmetros PID
-float KP = 4.0;
+float KP = 2.0;
 float KI = 0.0;
-float KD = 10.0;
+float KD = 5.0;
 
-int VelMax = 200;
+float VelMax = 200;
 int SetPoint = 3500;
 
 int ERRO = 0;
@@ -54,11 +54,13 @@ void setup() {
 
   //Calibração
   SerialBT.println("CALIBRANDO... mova o sensor sobre a linha");
-  for (uint16_t i = 0; i < 500; i++){
+  for (uint16_t i = 0; i < 400; i++){
     qtr.calibrate();
+    delay(10);
+    // posteriormente adicionar lad
   }
   SerialBT.println("Calibração Concluida!");
-  SerialBT.println("Qual tipo da pista? linha: (Preta/Branca)"); // precisa identificar qual o tipo?
+  SerialBT.println("Qual tipo da pista? linha: (Preto/Branco)"); // precisa identificar qual o tipo?
   
 }
 
@@ -85,31 +87,33 @@ void loop() {
 }
 // modifica está logica
 void run_fwd(int speedL, int speedR) {
-  digitalWrite(IN1, speedL);
-  digitalWrite(IN2, LOW);
+  analogWrite(IN1, speedL);
+  analogWrite(IN2, 0);
 
-  digitalWrite(IN3, speedR);
-  digitalWrite(IN4, LOW);
+  analogWrite(IN3, speedR);
+  analogWrite(IN4, 0);
 }
 
 void stop_motor() {
-  digitalWrite(IN1, 0);
-  digitalWrite(IN2, 0);
+  analogWrite(IN1, 0);
+  analogWrite(IN2, 0);
 
-  digitalWrite(IN3, 0);
-  digitalWrite(IN4, 0);
+  analogWrite(IN3, 0);
+  analogWrite(IN4, 0);
 }
 
 void run_robot() {
   int position = 0;
   uint8_t sensorIntersecao = 0;
-  if (!corDaLinha){
+  if (corDaLinha){
+    //true le linha branca
     // o sensor está configurado para identificar a linha na cor branca.
     position = qtr.readLineWhite(qtrValues);
   } else {
     // o sensor está configurado para identifcar a linha na cor preta.
     position = qtr.readLineBlack(qtrValues);
   }
+  // identifica se é intersecção
   for (uint8_t i = 0; i < 8 ;i++){
     if (qtrValues[i] < 200) {
       sensorIntersecao++;
@@ -123,7 +127,7 @@ void run_robot() {
     // calculo do erro
     ERRO = position - SetPoint;
     Proporcional = ERRO * KP;
-    Integral = (ERRO + ERRO_ANTERIOR) * KI;
+    Integral += (ERRO + ERRO_ANTERIOR) * KI;
     Derivativo = (ERRO - ERRO_ANTERIOR) * KD;
 
     Velocidade = Proporcional + Integral + Derivativo;
@@ -184,7 +188,17 @@ void processamentoCmdBluetooth(String cmd) {
       SerialBT.print("KI alterado para: "); SerialBT.println(KI);
     }
   }
+  else if (cmd.startsWith("VEL ")){
+    float val = cmd.substring(4).toFloat();
+    if (val >=0 && val <=255) {
+      VelMax = val;
+      SerialBT.print("Velocidade máxima alterada para: "); SerialBT.println(VelMax);
+    } else {
+      VelMax = 255;
+      SerialBT.print("Velocidade máxima alterada para: 225 (maximo)");
+    }
+  }
   else{
-    SerialBT.printf("KP atual: %.2f | KI atual: %.2f | KD atual: %.2f", KP, KI, KD);
+    SerialBT.printf("KP atual: %.2f | KI atual: %.2f | KD atual: %.2f | Velmax atual: %.2f", KP, KI, KD, VelMax);
   }
 }
