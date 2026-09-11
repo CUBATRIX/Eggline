@@ -7,6 +7,8 @@ BluetoothSerial SerialBT;
 String btCmd = "";
 bool running = false; // O seguidor de linha só anda ao digitar o cmd "START" pelo Bluetooth
 bool corDaLinha = false; // false para linha preta, true para linha branca.
+bool testeSensor = false;
+bool sensorUnitario = false;
 
 // Sensor
 QTRSensors qtr;
@@ -51,12 +53,12 @@ void setup() {
 
   qtr.setTypeRC();
   qtr.setSensorPins((const uint8_t[]){13,14,16,17,18,19,21,22}, SensorCount);
-
+  delay(2000);
   //Calibração
   SerialBT.println("CALIBRANDO... mova o sensor sobre a linha");
   for (uint16_t i = 0; i < 400; i++){
     qtr.calibrate();
-    delay(10);
+    delay(5);
     // posteriormente adicionar lad
   }
   SerialBT.println("Calibração Concluida!");
@@ -70,7 +72,29 @@ void loop() {
   }else {
     stop_motor();
   }
+  // Provisorio para depuração e coleta de dados do sensor;
+  if (testeSensor && !running){
+    stop_motor();
+    qtr.read(qtrValues);
+    if(sensorUnitario){
+      for(int i = 0; i < SensorCount; i++){
+          SerialBT.print("S");
+          SerialBT.print(i + 1);
+          SerialBT.print(": ");
+          SerialBT.print(qtrValues[i]);
+          SerialBT.print("\t");
+        }
+        SerialBT.println();
+        delay(300);
+    } else{
+      if(corDaLinha){
+        SerialBT.print(qtr.readLineWhite(qtrValues));
+      } else{
+        SerialBT.print(qtr.readLineBlack(qtrValues));
+      }
+    }
 
+  }
   // verifica mensagem do bluetooth
   while (SerialBT.available()){
     char c = SerialBT.read();
@@ -87,11 +111,21 @@ void loop() {
 }
 // modifica está logica
 void run_fwd(int speedL, int speedR) {
-  analogWrite(IN1, speedL);
-  analogWrite(IN2, 0);
-
-  analogWrite(IN3, speedR);
-  analogWrite(IN4, 0);
+  if(speedL >= 0){
+    analogWrite(IN1, speedL);
+    analogWrite(IN2, 0);
+  } else {
+    analogWrite(IN1, 0);
+    analogWrite(IN2, abs(speedL));
+  }
+  if(speedR >=0) 
+  {
+    analogWrite(IN3, speedR);
+    analogWrite(IN4, 0);
+  } else{
+    analogWrite(IN3, 0);
+    analogWrite(IN4, abs(speedR));
+  }
 }
 
 void stop_motor() {
@@ -115,7 +149,9 @@ void run_robot() {
   }
   // identifica se é intersecção
   for (uint8_t i = 0; i < 8 ;i++){
-    if (qtrValues[i] < 200) {
+    if (qtrValues[i] < 300 && corDaLinha) {
+      sensorIntersecao++;
+    } else if (qtrValues[i] > 700 && !corDaLinha){
       sensorIntersecao++;
     }
   }
@@ -142,8 +178,8 @@ void run_robot() {
     int speedLeft = VelMax + Velocidade;
     int speedRight = VelMax - Velocidade;
 
-    speedLeft = constrain(speedLeft, 0, VelMax);
-    speedRight = constrain(speedRight, 0, VelMax);
+    speedLeft = constrain(speedLeft, -VelMax, VelMax);
+    speedRight = constrain(speedRight, -VelMax, VelMax);
     run_fwd(speedLeft, speedRight);
   }
 }
@@ -195,7 +231,26 @@ void processamentoCmdBluetooth(String cmd) {
       SerialBT.print("Velocidade máxima alterada para: "); SerialBT.println(VelMax);
     } else {
       VelMax = 255;
-      SerialBT.print("Velocidade máxima alterada para: 225 (maximo)");
+      SerialBT.print("Velocidade máxima alterada para: 255 (maximo)");
+    }
+  }
+  // teste de sensor
+  else if (cmd == "TS"){
+    running = false;
+    if(testeSensor == false){
+      testeSensor = true;
+    } else {
+      testeSensor = false;
+    }
+  }
+  else if (cmd == "TSU"){
+    running = false;
+    if(testeSensor == false){
+      testeSensor = true;
+      sensorUnitario = true;
+    } else{
+      testeSensor = false;
+      sensorUnitario = false;
     }
   }
   else{
