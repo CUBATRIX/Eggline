@@ -1,20 +1,27 @@
 #include <Arduino.h>
 #include <QTRSensors.h>
 #include <BluetoothSerial.h>
+#include <Preferences.h>
 
+#define BOOT_BUTTON 0
 // variaveis goblais
 BluetoothSerial SerialBT;
 String btCmd = "";
 bool running = false; // O seguidor de linha só anda ao digitar o cmd "START" pelo Bluetooth
-bool corDaLinha = false; // false para linha preta, true para linha branca.
 bool testeSensor = false;
 bool sensorUnitario = false;
+bool bootPressionado = false;
+unsigned long tempoPressionado = 0;
 
+const int LED = 2;
+// configurações da memoria
+Preferences preferences;
+bool calibracaoM = false;
+bool corDaLinha = false; // false para linha preta, true para linha branca.
 // Sensor
 QTRSensors qtr;
 const uint8_t SensorCount = 8;
 unsigned short qtrValues[SensorCount];
-
 // Ponte H
 // Motor A
 const int IN1 = 25;
@@ -24,11 +31,11 @@ const int IN3 = 27;
 const int IN4 = 32;
 
 // Parâmetros PID
-float KP = 2.0;
-float KI = 0.0;
+float KP = 2.5;
+float KI = 0.05;
 float KD = 5.0;
 
-float VelMax = 200;
+float VelMax = 225;
 int SetPoint = 3500;
 
 int ERRO = 0;
@@ -36,9 +43,37 @@ int ERRO_ANTERIOR = 0;
 float Proporcional = 0, Integral = 0, Derivativo = 0, Velocidade = 0;
 
 void setup() {
+  //Inicializando
   Serial.begin(115200);
+  delay(1000);
   SerialBT.begin("Egg_line"); // Nome que o seguidor ira aparecer na conexão bluetooth
   SerialBT.println("Iniciando...");
+  digitalWrite(LED, LOW);
+  delay(50);
+  digitalWrite(LED, HIGH);
+  delay(50);
+  digitalWrite(LED, LOW);
+  delay(50);
+  digitalWrite(LED, HIGH);
+  
+  //Setando pinos
+  pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
+  pinMode(LED,OUTPUT);
+  stop_motor();
+
+  qtr.setTypeRC();
+  qtr.setSensorPins((const uint8_t[]){13,14,16,17,18,19,21,22}, SensorCount);
+  delay(2000);
+  preferences.begin("memoria", true); // le os dados, caso não tenha dado utiliza os proprios valores
+  KP = preferences.getFloat("kp", KP);
+  KI = preferences.getFloat("ki", KI);
+  KD = preferences.getFloat("kd", KD);
+  VelMax = preferences.getFloat("velMax", VelMax);
+  calibracaoM = preferences.getBool("calibracaoStatus", false);
+
+  preferences.end();
+
   SerialBT.println("Parametros inicias:");
   SerialBT.print("KP: ");
   SerialBT.println(KP);
@@ -47,26 +82,47 @@ void setup() {
   SerialBT.print("KD: ");
   SerialBT.println(KD);
 
-  pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
-  pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
-  stop_motor();
+  //Adicionar controle de decisão aqui para saber se 
+  if(calibracaoM == false){
+    //Calibração
+    SerialBT.println("CALIBRANDO... mova o sensor sobre a linha");
+    for (uint16_t i = 0; i < 400; i++){
+     qtr.calibrate();
+      delay(5);
+      // posteriormente adicionar lad
+    }
+    for(int i = 0; i <= 6; i++){
+      digitalWrite(LED, HIGH);
+      delay(50);
+      digitalWrite(LED, LOW);
+      delay(50);
+    }
+    digitalWrite(LED, HIGH);
+    preferences.begin("memoria", false);
+    // guardando dados da calibração
+    preferences.putBytes("cal_min", qtr.calibrationOn.minimum, sizeof(qtr.calibrationOn.minimum));
+    preferences.putBytes("cal_max", qtr.calibrationOn.maximum, sizeof(qtr.calibrationOn.maximum));
+    preferences.putBool("calibracaoStatus", true);
+    preferences.end();
+    delay(150);
 
-  qtr.setTypeRC();
-  qtr.setSensorPins((const uint8_t[]){13,14,16,17,18,19,21,22}, SensorCount);
-  delay(2000);
-  //Calibração
-  SerialBT.println("CALIBRANDO... mova o sensor sobre a linha");
-  for (uint16_t i = 0; i < 400; i++){
-    qtr.calibrate();
-    delay(5);
-    // posteriormente adicionar lad
+    SerialBT.println("Calibração Concluida!");
+    SerialBT.println("Qual tipo da pista? linha: (Preto/Branco)"); // precisa identificar qual o tipo?
+  } else {
+    // fazendo leitura de dados salvos na memoria;
+    digitalWrite(LED, HIGH);
+    preferences.begin("memoria", true);
+    preferences.getBytes("cal_min", qtr.calibrationOn.minimum, sizeof(qtr.calibrationOn.minimum));
+    preferences.getBytes("cal_max", qtr.calibrationOn.maximum, sizeof(qtr.calibrationOn.maximum));
+    corDaLinha = preferences.getBool("corDaLinha", corDaLinha);
+    preferences.end();
+    delay(2000);
+    running = true;
   }
-  SerialBT.println("Calibração Concluida!");
-  SerialBT.println("Qual tipo da pista? linha: (Preto/Branco)"); // precisa identificar qual o tipo?
-  
 }
 
 void loop() {
+  verificarBotao();
   if (running) {
     run_robot();
   }else {
@@ -149,7 +205,7 @@ void run_robot() {
   }
   // identifica se é intersecção
   for (uint8_t i = 0; i < 8 ;i++){
-    if (qtrValues[i] < 300 && corDaLinha) {
+    if (qtrValues[i] < 200 && corDaLinha) {
       sensorIntersecao++;
     } else if (qtrValues[i] > 700 && !corDaLinha){
       sensorIntersecao++;
@@ -253,7 +309,43 @@ void processamentoCmdBluetooth(String cmd) {
       sensorUnitario = false;
     }
   }
+  // salvando parametros na memoria flash
+  else if (cmd == "SALVAR"){
+    salva_memoria();
+  }
   else{
     SerialBT.printf("KP atual: %.2f | KI atual: %.2f | KD atual: %.2f | Velmax atual: %.2f", KP, KI, KD, VelMax);
+  }
+}
+
+void salva_memoria(){
+  preferences.begin("memoria", false);
+    preferences.putFloat("kp", KP);
+    preferences.putFloat("ki", KI);
+    preferences.putFloat("kd", KD);
+    preferences.putFloat("velMax", VelMax);
+    preferences.putBool("corDaLinha", corDaLinha);
+    preferences.end();
+}
+
+void verificarBotao(){
+  bool pressionado = (digitalRead(BOOT_BUTTON) == LOW);
+
+  if (pressionado && !bootPressionado){
+    tempoPressionado = millis();
+    bootPressionado = true;
+  }
+  else if (!pressionado && bootPressionado){
+    bootPressionado = false;
+  }
+  if (pressionado && bootPressionado){
+    if((millis() - tempoPressionado) >= 5000){
+      preferences.begin("memoria", false);
+      preferences.remove("calibracaoStatus");
+      preferences.end();
+      bootPressionado = false;
+      pressionado = false;
+      SerialBT.println("Aperte o botão reset do esp para recalibrar");
+    }
   }
 }
