@@ -31,40 +31,36 @@ const int IN4 = 32;
 float KP = 2.5;
 float KI = 0.05;
 float KD = 5.0;
-// Parametro de Compensação;
-float MP = 1;
-float VelMax = 225;
-int SetPoint = 3500;
-
 int ERRO = 0;
 int ERRO_ANTERIOR = 0;
 float Proporcional = 0, Integral = 0, Derivativo = 0, Velocidade = 0;
+// Parametro dos Motores;
+float MP = 1;
+float VelMax = 225;
+int SetPoint = 3500;
 
 void setup() {
   //Inicializando
   Serial.begin(115200);
   delay(1000);
-  SerialBT.begin("Egg_line"); // Nome que o seguidor ira aparecer na conexão bluetooth
+  SerialBT.begin("Egg_line"); // Nome que o seguidor ira aparecer na conexão bluetooth ( alterar posteriormente )
   SerialBT.println("Iniciando...");
-  digitalWrite(LED, LOW);
-  delay(50);
-  digitalWrite(LED, HIGH);
-  delay(50);
-  digitalWrite(LED, LOW);
-  delay(50);
-  digitalWrite(LED, HIGH);
-  
   //Setando pinos
   pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
   pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
   pinMode(LED,OUTPUT);
 
   stop_motor();
-
   qtr.setTypeRC();
   qtr.setSensorPins((const uint8_t[]){13,14,16,17,18,19,21,22}, SensorCount);
+   for(int i = 0; i < 3; i ++){
+    digitalWrite(LED, HIGH);
+    delay(50);
+    digitalWrite(LED, LOW);
+    delay(50);
+  }
   delay(2000);
-  preferences.begin("memoria", true); // le os dados, caso não tenha dado utiliza os proprios valores
+  preferences.begin("memoria", true); // le os dados, caso não tenha dados utiliza os proprios valores padrão e refaz a calibração
   KP = preferences.getFloat("kp", KP);
   KI = preferences.getFloat("ki", KI);
   KD = preferences.getFloat("kd", KD);
@@ -72,21 +68,17 @@ void setup() {
   calibracaoM = preferences.getInt("calibracao", 0);
   SerialBT.print("CALIBRACAO LIDA NO BOOT: ");
   SerialBT.println(calibracaoM ? "1" : "0");
-
   preferences.end();
 
   SerialBT.println("Parametros inicias:");
-  SerialBT.print("KP: ");
-  SerialBT.println(KP);
-  SerialBT.print("KI: ");
-  SerialBT.println(KI);
-  SerialBT.print("KD: ");
-  SerialBT.println(KD);
+  SerialBT.println("KP: " + String(KP));
+  SerialBT.println("KI: " + String(KI));
+  SerialBT.println("KD: " + String(KD));
   digitalWrite(LED, HIGH);
   delay(150);
   digitalWrite(LED, LOW);
 
-  //Adicionar controle de decisão aqui para saber se 
+  // tomada de decisão de calibração (0 = precisa calibrar : 1 = está calibrado)
   if(calibracaoM == 0){
     //Calibração
     digitalWrite(LED, HIGH);
@@ -94,7 +86,6 @@ void setup() {
     for (uint16_t i = 0; i < 400; i++){
      qtr.calibrate();
       delay(5);
-      // posteriormente adicionar lad
     }
     for(int i = 0; i <= 6; i++){
       digitalWrite(LED, HIGH);
@@ -109,15 +100,14 @@ void setup() {
     SerialBT.println("Qual tipo da pista? linha: (Preto/Branco)"); // precisa identificar qual o tipo?
   } else {
     // fazendo leitura de dados salvos na memoria;
-    digitalWrite(LED, LOW);
-    delay(100);
-    digitalWrite(LED, HIGH);
-    delay(100);
-    digitalWrite(LED, LOW);
-    delay(100);
-    digitalWrite(LED, HIGH);
-    delay(100);
-    digitalWrite(LED, LOW);
+    for(int i = 0; i <= 3; i++){
+      digitalWrite(LED, HIGH);
+      delay(150);
+      digitalWrite(LED, LOW);
+      delay(150);
+    }
+    // Rever
+    qtr.calibrate();
     preferences.begin("memoria", true);
     preferences.getBytes("cal_min", qtr.calibrationOn.minimum, sizeof(qtr.calibrationOn.minimum));
     preferences.getBytes("cal_max", qtr.calibrationOn.maximum, sizeof(qtr.calibrationOn.maximum));
@@ -134,7 +124,7 @@ void loop() {
   }else {
     stop_motor();
   }
-  // Provisorio para depuração e coleta de dados do sensor;
+  // Para teste do sensor e motores
   if (testeSensor && !running){
     stop_motor();
     qtr.read(qtrValues);
@@ -217,16 +207,21 @@ void run_robot() {
       sensorIntersecao++;
     }
   }
+  // Rever trecho de intersecção
   if (sensorIntersecao >= 6)
   {
-    run_fwd(VelMax, VelMax);
+    for(int i = 0; i < 150; i++){
+      run_fwd(VelMax, VelMax);
+    }
+    sensorIntersecao = 0;
   }
   else{
     // calculo do erro
     ERRO = position - SetPoint;
-    Proporcional = ERRO * KP;
-    Integral = (ERRO + ERRO_ANTERIOR) * KI;
-    Derivativo = (ERRO - ERRO_ANTERIOR) * KD;
+    // teste do erro como função quadratica
+    Proporcional = (ERRO*abs(ERRO)) * KP;
+    Integral = ((ERRO*abs(ERRO)) + ERRO_ANTERIOR) * KI;
+    Derivativo = ((ERRO*abs(ERRO)) - ERRO_ANTERIOR) * KD;
 
     Velocidade = Proporcional + Integral + Derivativo;
     if (Velocidade > VelMax) {
