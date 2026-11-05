@@ -9,24 +9,36 @@ String btCmd = "";
 bool running = false; // O seguidor de linha só anda ao digitar o cmd "START" pelo Bluetooth
 bool testeSensor = false;
 bool sensorUnitario = false;
+bool sensorlateral = false;
 
 const int LED = 2;
 // configurações da memoria
 Preferences preferences;
 int calibracaoM = 0;
 int corDaLinha = 0; // 0 para linha preta, 1 para linha branca.
-// Sensor
+// Sensor frontal
 QTRSensors qtr;
 const uint8_t SensorCount = 8;
 unsigned short qtrValues[SensorCount];
-// Ponte H
+// Sensor de marcação
+#define QRE_ESQ 34
+#define QRE_DIR 35
+bool captado = false;
+int marcacao = 3; // quatidade de marcações que deve alcançar para desligar
+int marcacaoAtual = 0;
+int cdr = 1500; // tempo de recarga quando encontra uma marcação ms
+int hold = 2000; // determinar valor que o sensor considera preto ou branco (sensores laterais)
+int parada = 1000; // tempo para o carrinho parar apos ultima marcação ms
+int tempoIS = 500; // tempo que anda reto em intersecção
+unsigned long temporizador = millis();
+
+// --- Ponte H ----
 // Motor A
 const int IN1 = 25;
 const int IN2 = 26;
 // Motor B
 const int IN3 = 27;
 const int IN4 = 32;
-
 // Parâmetros PID
 float KP = 2.5;
 float KI = 0.05;
@@ -35,20 +47,23 @@ int ERRO = 0;
 int ERRO_ANTERIOR = 0;
 float Proporcional = 0, Integral = 0, Derivativo = 0, Velocidade = 0;
 // Parametro dos Motores;
-float MP = 1;
+// float MP = 1;
 float VelMax = 225;
-int SetPoint = 3500;
+const int SetPoint = 3500;
 
-void setup() {
+void setup() { 
   //Inicializando
   Serial.begin(115200);
-  delay(1000);
   SerialBT.begin("Egg_line"); // Nome que o seguidor ira aparecer na conexão bluetooth ( alterar posteriormente )
+  delay(1000);
   SerialBT.println("Iniciando...");
   //Setando pinos
   pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT);
   pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
   pinMode(LED,OUTPUT);
+  //Sentando sensores de marcação
+  pinMode(QRE_DIR, INPUT);
+  pinMode(QRE_ESQ, INPUT);
 
   stop_motor();
   qtr.setTypeRC();
@@ -65,6 +80,11 @@ void setup() {
   KI = preferences.getFloat("ki", KI);
   KD = preferences.getFloat("kd", KD);
   VelMax = preferences.getFloat("velMax", VelMax);
+  marcacao = preferences.getInt("marcacao", marcacao);
+  cdr = preferences.getInt("cdr", cdr);
+  hold = preferences.getInt("hold", hold);
+  parada = preferences.getInt("parada", parada);
+  tempoIS = preferences.getInt("tempois", tempoIS);
   calibracaoM = preferences.getInt("calibracao", 0);
   SerialBT.print("CALIBRACAO LIDA NO BOOT: ");
   SerialBT.println(calibracaoM ? "1" : "0");
@@ -74,6 +94,12 @@ void setup() {
   SerialBT.println("KP: " + String(KP));
   SerialBT.println("KI: " + String(KI));
   SerialBT.println("KD: " + String(KD));
+  SerialBT.println("Qtd de Marcações: " + String(marcacao));
+  SerialBT.println("Tempo de recarga da marcação: " + String(cdr));
+  SerialBT.println("Limite do sensor analogico: " + String(hold));
+  SerialBT.println("Tempo para o seguidor parar: " + String(parada));
+  SerialBT.println("Tempo para cruzar intersecção: " + String(tempoIS));
+  SerialBT.println("Velocidade maxima: " + String(VelMax));
   digitalWrite(LED, HIGH);
   delay(150);
   digitalWrite(LED, LOW);
@@ -85,7 +111,7 @@ void setup() {
     SerialBT.println("CALIBRANDO... mova o sensor sobre a linha");
     for (uint16_t i = 0; i < 400; i++){
      qtr.calibrate();
-      delay(5);
+      delay(10);
     }
     for(int i = 0; i <= 6; i++){
       digitalWrite(LED, HIGH);
@@ -97,7 +123,7 @@ void setup() {
     delay(150);
 
     SerialBT.println("Calibração Concluida!");
-    SerialBT.println("Qual tipo da pista? linha: (Preto/Branco)"); // precisa identificar qual o tipo?
+    SerialBT.println("Qual tipo da pista? linha: (Preto/Branco)"); // precisa identificar qual o tipo
   } else {
     // fazendo leitura de dados salvos na memoria;
     for(int i = 0; i <= 3; i++){
@@ -113,6 +139,9 @@ void setup() {
     preferences.getBytes("cal_max", qtr.calibrationOn.maximum, sizeof(qtr.calibrationOn.maximum));
     corDaLinha = preferences.getInt("corDaLinha", corDaLinha);
     preferences.end();
+    SerialBT.println("Pronto para iniciar");
+    SerialBT.println("Parametros carregados da memoria");
+    SerialBT.println("Calibração: " + String(corDaLinha) + " | KP: " + String(KP) + " | KI: " + String(KI) + " | KD: " + String(KD));
     delay(2000);
     running = true;
   }
@@ -120,7 +149,17 @@ void setup() {
 
 void loop() {
   if (running) {
-    run_robot();
+    if(marcacaoAtual <= marcacao){
+      run_robot();
+    }
+    else{
+      if(millis() - temporizador <= parada)
+      {
+        run_fwd(VelMax,VelMax);
+      }
+      temporizador = millis();
+      running = false;
+    }
   }else {
     stop_motor();
   }
@@ -146,6 +185,9 @@ void loop() {
       }
     }
 
+  } else if(!running && sensorlateral){
+    SerialBT.println("Sensores E: " + String(analogRead(QRE_ESQ)) + " | D: " + String(analogRead(QRE_DIR)));
+    delay(150);
   }
   // verifica mensagem do bluetooth
   while (SerialBT.available()){
@@ -164,11 +206,11 @@ void loop() {
 // modifica está logica
 void run_fwd(int speedL, int speedR) {
   if(speedL >= 0){
-    analogWrite(IN1, speedL*MP);
+    analogWrite(IN1, speedL);
     analogWrite(IN2, 0);
   } else {
     analogWrite(IN1, 0);
-    analogWrite(IN2, abs(speedL*MP));
+    analogWrite(IN2, abs(speedL));
   }
   if(speedR >=0) 
   {
@@ -199,7 +241,17 @@ void run_robot() {
     // o sensor está configurado para identifcar a linha na cor preta.
     position = qtr.readLineBlack(qtrValues);
   }
-  // identifica se é intersecção
+  
+  int leitura_esq = analogRead(QRE_ESQ);
+  int leitura_dir = analogRead(QRE_DIR);
+  if ((leitura_esq > hold || leitura_dir > hold) &&  captado == false){
+    marcacaoAtual++;
+    captado = true;
+  } else if ((captado == true) && (millis() - temporizador > cdr)){
+    captado = false;
+    temporizador = millis();
+  }
+  // identifica se é intersecção, alterar para uilizar o sensor lateral
   for (uint8_t i = 0; i < 8 ;i++){
     if (qtrValues[i] < 200 && (corDaLinha == 1)) {
       sensorIntersecao++;
@@ -210,18 +262,23 @@ void run_robot() {
   // Rever trecho de intersecção
   if (sensorIntersecao >= 6)
   {
-    for(int i = 0; i < 150; i++){
+    temporizador = millis();
+    if((millis() - temporizador <= tempoIS)) // em segundos
+    {
       run_fwd(VelMax, VelMax);
     }
-    sensorIntersecao = 0;
+    else{
+      sensorIntersecao = 0;
+    }
   }
   else{
+    // metodo 1
     // calculo do erro
     ERRO = position - SetPoint;
     // teste do erro como função quadratica
-    Proporcional = (ERRO*abs(ERRO)) * KP;
-    Integral = ((ERRO*abs(ERRO)) + ERRO_ANTERIOR) * KI;
-    Derivativo = ((ERRO*abs(ERRO)) - ERRO_ANTERIOR) * KD;
+    Proporcional = ERRO * KP;
+    Integral = (ERRO + ERRO_ANTERIOR) * KI;
+    Derivativo = (ERRO - ERRO_ANTERIOR) * KD;
 
     Velocidade = Proporcional + Integral + Derivativo;
     if (Velocidade > VelMax) {
@@ -294,11 +351,42 @@ void processamentoCmdBluetooth(String cmd) {
       SerialBT.print("Velocidade máxima alterada para: 255 (maximo)");
     }
   }
-  else if (cmd.startsWith("MP ")){
-    float val = cmd.substring(3).toFloat();
-    if (val >= 0){
-      MP = val;
-      SerialBT.print("MP alterado para: "); SerialBT.println(MP);
+  else if (cmd.startsWith("marcacao ")){
+    int val = cmd.substring(9).toInt();
+    if (val >= 0) {
+      marcacao = val;
+      SerialBT.print("Qtd de marcações alterada para: " + String(marcacao));
+    } else{
+      marcacao = 0;
+      SerialBT.print("Qtd de marcações alterada para: " + String(marcacao));
+    }
+  }
+  else if (cmd.startsWith("hold ")){
+    int val = cmd.substring(5).toInt();
+    if (val >= 0) {
+      hold = val;
+      SerialBT.print("Valor limite do sensor lateral: " + String(hold));
+    }
+  }
+  else if (cmd.startsWith("cdr ")){
+    int val = cmd.substring(4).toInt();
+    if (val >= 0) {
+      cdr = val;
+      SerialBT.print("Tempo de espera entre coleta do sensor lateral alterado para: " + String((cdr)/1000) + ("s"));
+    }
+  }
+  else if (cmd.startsWith("parada ")){
+    int val = cmd.substring(7).toInt();
+    if (val >= 0) {
+      parada = val;
+      SerialBT.print("Tempo para parar alterado para: " + String((parada)/1000) + ("s"));
+    }
+  }
+  else if (cmd.startsWith("tempois ")){
+    int val = cmd.substring(8).toInt();
+    if (val >= 0) {
+      tempoIS = val;
+      SerialBT.print("Tempo para passa pela intersecção alterado para: " + String((tempoIS)/1000) + ("s"));
     }
   }
   // ----------------- COMANDOS DE AÇÃO E PARAMETROS ----------------------------
@@ -321,10 +409,18 @@ void processamentoCmdBluetooth(String cmd) {
       sensorUnitario = false;
     }
   }
+  else if (cmd == "TL"){
+    running = false;
+    if(sensorlateral == false){
+      sensorlateral = true;
+    } else{
+      sensorlateral = false;
+    }
+  }
   else if ( cmd == "RFW"){
     // roda os motores para frente na velocidade maxima configurada
     for ( int i = 0; i <= 100; i++){
-      analogWrite(IN1, VelMax*MP);
+      analogWrite(IN1, VelMax);
       analogWrite(IN2, 0);
 
       analogWrite(IN3, VelMax);
@@ -335,7 +431,7 @@ void processamentoCmdBluetooth(String cmd) {
     // roda os motores para trás na velocidade maxima
     for (int i = 0; i <= 100; i++){
       analogWrite(IN1, 0);
-      analogWrite(IN2, VelMax*MP);
+      analogWrite(IN2, VelMax);
 
       analogWrite(IN3, 0);
       analogWrite(IN4, VelMax);
@@ -362,12 +458,16 @@ void salva_memoria(){
     preferences.putFloat("kp", KP);
     preferences.putFloat("ki", KI);
     preferences.putFloat("kd", KD);
-    preferences.putFloat("mp", MP);
     preferences.putFloat("velMax", VelMax);
     preferences.putInt("corDaLinha", corDaLinha);
     preferences.putBytes("cal_min", qtr.calibrationOn.minimum, sizeof(qtr.calibrationOn.minimum));
     preferences.putBytes("cal_max", qtr.calibrationOn.maximum, sizeof(qtr.calibrationOn.maximum));
     preferences.putInt("calibracao", calibracaoM);
+    preferences.putInt("marcacao", marcacao);
+    preferences.putInt("cdr", cdr);
+    preferences.putInt("hold", hold);
+    preferences.putInt("parada", parada);
+    preferences.putInt("tempois", tempoIS);
     SerialBT.print("CALIBRACAO SALVA: ");
     SerialBT.println(
     preferences.getBool("calibracao", 0)
@@ -382,9 +482,6 @@ void salva_memoria(){
 
     SerialBT.print("KD: ");
     SerialBT.println(preferences.getFloat("kd", 0));
-
-    SerialBT.print("MP: ");
-    SerialBT.println(preferences.getFloat("mp", 0));
 
     SerialBT.print("VelMax: ");
     SerialBT.println(preferences.getFloat("velMax", 0));
