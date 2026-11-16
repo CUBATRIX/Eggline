@@ -6,26 +6,28 @@
 // Led interno para Avisos
 #define LED 2
 // ----- Sensor ------
-#define S0 13
-#define S1 14
-#define S2 16
-#define S3 17
-#define S4 18
-#define S5 19
-#define S6 21
-#define S7 22
+#define S0 23
+#define S1 22
+#define S2 32
+#define S3 33
+#define S4 25
+#define S5 26
+#define S6 27
+#define S7 14
 
 // ----- Sensor Lateral ----
-#define SLE 34
-#define SLD 35
+#define SLE 39
+#define SLD 36
 
 // ---- Pinos para ponte H ----
 // Motor A - Direito
-#define M1 25
-#define M2 26
+#define AIN1 18
+#define AIN2 19
+#define PWMA 21
 // Motor B - Esquerdo
-#define M3 27
-#define M4 32
+#define BIN1 17
+#define BIN2 16
+#define PWMB 4
 
 // ---- Parametros é variaveis -----
 Preferences preferences;
@@ -40,14 +42,15 @@ bool corDaPista = false; // false = linha branca : true = linha preta
 BluetoothSerial SerialBT;
 String btCmd = "";
 // Motores
-int velocidade_max = 180;
+int velocidade_max = 120;
+int velocidade_base = 90;
 int velocidade_max_curva = 80; // ajustar ainda.
 
 // Estados
 bool run = false;
 
 // Sensor lateral direito
-int THRESHOLD_LATERAL = 2000;
+int THRESHOLD_LATERAL = 4000;
 int contadorMarcasAtual = 0;
 int contadorMarcas = 0;
 bool marcaCapturada = false;
@@ -61,19 +64,21 @@ bool temporizadorAtivo = false;
 const int SetPoint = 3500;
 int ERRO = 0;
 int ERRO_ANTERIOR = 0;
-float KP = 5;
-float KI = 0.1;
-float KD = 2;
+float KP = 0.015;
+float KI = 0;
+float KD = 0.1;
 float Proporcional = 0, Integral = 0, Derivativo = 0, Velocidade = 0;
 // variaveis para modo de curva e sensor esquerdo;
-float KPC = 15;
-float KDC = 10;
+float KPC = 0.3;
+float KDC = 0.2;
 bool curva = false;
 int tempoMinimoCurva = 300;
-int tempoInicioCurva = 0;
+unsigned long tempoInicioCurva = 0;
 // Variaveis para intrepretação de intersecção
 int S_inter = 0;
 bool PID = true;
+unsigned long tempoIn = 0;
+int CDR = 300;
 // ---- Parametrôs para teste -----
 bool TS = false;
 bool TSU = false;
@@ -85,8 +90,13 @@ void setup() {
   SerialBT.begin("Egg");
   // Inicializando pinos
   pinMode(LED, OUTPUT);
-  pinMode(M1, OUTPUT); pinMode(M2, OUTPUT);
-  pinMode(M3, OUTPUT); pinMode(M4, OUTPUT);
+  // motor direito
+  pinMode(AIN1, OUTPUT); pinMode(AIN2, OUTPUT);
+  // moto esquerdo
+  pinMode(BIN1, OUTPUT); pinMode(BIN2, OUTPUT);
+  pinMode(PWMA, OUTPUT); pinMode(PWMB, OUTPUT);
+  analogWriteFrequency(PWMA, 20000);
+  analogWriteFrequency(PWMB, 20000);
   delay(2000);
   // obetando dados da memoria
   preferences.begin("memoria", true);
@@ -99,14 +109,15 @@ void setup() {
   velocidade_max = preferences.getInt("vm", velocidade_max);
   velocidade_max_curva = preferences.getInt("vmc", velocidade_max_curva);
   THRESHOLD_LATERAL = preferences.getInt("ths", THRESHOLD_LATERAL);
+  CDR = preferences.getInt("cdr", CDR);
   preferences.end();
   SerialBT.println("KP: " + String(KP) + " | KI: " + String(KI) + " | KD: " + String(KD) + " | KPC: " + String(KPC) + " | KDC " + String(KDC));
   SerialBT.println("Velocidade_max: " + String(velocidade_max) + " | Velocidade_max_curva: " + String(velocidade_max_curva));
-  SerialBT.println("ContadorMarcas: " + String(contadorMarcas) + " | Threshold_lateral: " + String(THRESHOLD_LATERAL));
+  SerialBT.println("ContadorMarcas: " + String(contadorMarcas) + " | Threshold_lateral: " + String(THRESHOLD_LATERAL) + " | CDR: " + String(CDR/1000)+"s");
 
   // configurando sensor e calibração inicial
   qtr.setTypeRC();
-  qtr.setSensorPins((const uint8_t[]){S0,S1,S2,S3,S4,S5,S6,S7}, SensorCount);
+  qtr.setSensorPins((const uint8_t[]){S7,S6,S5,S4,S3,S2,S1,S0}, SensorCount);
   SerialBT.println("Iniciando calibração");
   digitalWrite(LED,HIGH);
   for (uint16_t i = 0; i < 400; i++){
@@ -128,11 +139,11 @@ void setup() {
   if(texto == "PRETO"){
     SerialBT.println("Pista configurado para linha preta");
     corDaPista = true;
-    run = true;
+    //run = true;
   } else {
     SerialBT.println("Pista configurado para linha Branca");
     corDaPista = false;
-    run = true;
+    //run = true;
   }
 }
 
@@ -168,6 +179,8 @@ void processamentoCmdBluetooth(String cmd){
   cmd.toUpperCase();
   // ---- inicio e parada
   if (cmd == "START"){
+    contadorMarcasAtual = 0;
+    temporizadorAtivo = false;
     run = true;
     SerialBT.println("Motores a todo vapor!");
   } else if (cmd == "STOP"){
@@ -194,26 +207,32 @@ void processamentoCmdBluetooth(String cmd){
     }
   } else if (cmd == "MA"){
     SerialBT.println("Motor girando para frente");
-    for(int i = 0; i < 150; i++){
+    for(int i = 0; i < 400; i++){
       Andar_Frente();
     }
+    delay(1000);
+    Stop();
   } else if (cmd == "MD"){
+    // motor certo orientação errada
     SerialBT.println("Motor da direita girando");
-    for(int i = 0; i < 150; i++){
+    for(int i = 0; i < 400; i++){
       Andar_Direita();
     }
+    delay(1000);
+    Stop();
   } else if (cmd == "ME"){
+    // moto esquerdo correto, orientação errada
     SerialBT.println("Motor da Esquerda girando");
-    for(int i = 0; i < 150; i++){
+    for(int i = 0; i < 400; i++){
       Andar_Esquerda();
     }
-  } else if (cmd == "TSD"){
-    TSD = true;
+    delay(1000);
+    Stop();
+    // estra reconhencdo sensor esquerdo
+  } else if (cmd == "TSL"){
+    TSD = !TSD;
     TS = false;
-    SerialBT.println("Iniciando teste do sensor direito");
-    if(TSD == true){
-      TSD = false;
-    }
+    SerialBT.println(TSD ? "Iniciando teste do sensores lateral" : "Teste do sensor lateral parado");
   }// ---- mudanças de parametros
   else if(cmd.startsWith("KD ")){
     float val = cmd.substring(3).toFloat();
@@ -248,8 +267,8 @@ void processamentoCmdBluetooth(String cmd){
   }else if(cmd.startsWith("VELMAX ")){
     int val = cmd.substring(7).toInt();
     if (val >= 0){
-      if(val > 255){
-        velocidade_max = 255;
+      if(val > 120){
+        velocidade_max = 120;
         SerialBT.println("Velocidade máxima alterado para: " + String(velocidade_max));
       } else{
         velocidade_max = val;
@@ -259,20 +278,37 @@ void processamentoCmdBluetooth(String cmd){
   }else if(cmd.startsWith("VELMAXC ")){
     int val = cmd.substring(8).toInt();
     if(val >= 0){
-      if(val > 255){
-        velocidade_max_curva = 255;
-        SerialBT.println("Velocidade máxima de curva alterado para: " + String(velocidade_max));
+      if(val > 120){
+        velocidade_max_curva = 120;
+        SerialBT.println("Velocidade máxima de curva alterado para: " + String(velocidade_max_curva));
       } else {
         velocidade_max_curva = val;
-        SerialBT.println("Velocidade máxima de curva alterado para: " + String(velocidade_max));
+        SerialBT.println("Velocidade máxima de curva alterado para: " + String(velocidade_max_curva));
+      }
+    }
+  }else if(cmd.startsWith("VEL ")){
+    int val = cmd.substring(4).toInt();
+    if(val >= 0){
+      if(val > 120){
+        velocidade_base = 120;
+        SerialBT.println("Velocidade base alterado para: " + String(velocidade_base));
+      } else{
+        velocidade_base = val;
+        SerialBT.println("Velocidade base alterado para: " + String(velocidade_base));
       }
     }
   }else if(cmd.startsWith("TMC ")){
     int val = cmd.substring(4).toInt();
     if (val >= 0){
       tempoMinimoCurva = val;
-      SerialBT.println("Tempo minimo para periodo de curva: " + String(tempoMinimoCurva/1000));
+      SerialBT.println("Tempo minimo para periodo de curva: " + String(tempoMinimoCurva/1000)+"s");
     }
+  }else if(cmd.startsWith("CDR ")){
+   int val = cmd.substring(4).toInt();
+   if (val >= 0){
+      CDR = val;
+      SerialBT.println("Tempo de espera apos interseccao alterado para: " + String(CDR/1000)+"s");        
+    }     
   }else if(cmd.startsWith("TL ")){
     int val = cmd.substring(3).toInt();
     if (val >= 0){
@@ -308,6 +344,7 @@ void TesteSensor(){
   if (TS && TSU == false) {
     // Exibe a posição da linha 
     SerialBT.println(position);
+    delay(500);
   } else {
     // Exibe o valor individual de cada refletância lida
     for(int8_t i = 0; i < SensorCount; i++) {
@@ -318,81 +355,93 @@ void TesteSensor(){
       SerialBT.print("\t");
     }
     SerialBT.println();
+    delay(500);
   }
-  
-  delay(200);
 } 
 void TesteSensorDr(){
   int lerSensor = analogRead(SLD);
-  SerialBT.println("Valor do sensor direito: " + String(lerSensor));
-  delay(100);
+  int lerSensor2 = analogRead(SLE);
+  SerialBT.println("Valor do sensor direito: " + String(lerSensor) + " | Valor do sensor esquerdo: " + String(lerSensor2));
+  delay(400);
 }
 //funções auxiliar
 void Andar_Direita(){
   // Motor direito
-  analogWrite(M1, 255);
-  analogWrite(M2, 0);
+  digitalWrite(AIN1, LOW);
+  digitalWrite(AIN2, HIGH);
+  analogWrite(PWMA, 120);
   // Motor Esquerdo
-  analogWrite(M3, 0);
-  analogWrite(M4, 0);
+  digitalWrite(BIN1, LOW);
+  digitalWrite(BIN2, LOW);
+  analogWrite(PWMB, 0);
 }
 void Andar_Esquerda(){
   // Motor direito
-  analogWrite(M1, 0);
-  analogWrite(M2, 0);
+  digitalWrite(AIN1, LOW);
+  digitalWrite(AIN2, LOW);
+  analogWrite(PWMA, 0);
   // Motor Esquerdo
-  analogWrite(M3, 255);
-  analogWrite(M4, 0);
+  digitalWrite(BIN1, LOW);
+  digitalWrite(BIN2, HIGH);
+  analogWrite(PWMB, 120);
 }
 void Andar_Frente(){
   // Motor direito
-  analogWrite(M1, 255);
-  analogWrite(M2, 0);
+  digitalWrite(AIN1, LOW);
+  digitalWrite(AIN2, HIGH);
+  analogWrite(PWMA, 120);
+  
   // Motor Esquerdo
-  analogWrite(M3, 255);
-  analogWrite(M4, 0);
+  digitalWrite(BIN1, LOW);
+  digitalWrite(BIN2, HIGH);
+  analogWrite(PWMB, 120);
 }
 void Stop(){
   run = false;
   // Motor direito
-  analogWrite(M1, LOW);
-  analogWrite(M2, LOW);
+  digitalWrite(AIN1, LOW);
+  digitalWrite(AIN2, LOW);
+  analogWrite(PWMA, LOW);
   // Motor Esquerdo
-  analogWrite(M3, LOW);
-  analogWrite(M4, LOW);
+  digitalWrite(BIN1, LOW);
+  digitalWrite(BIN2, LOW);
+  analogWrite(PWMB, LOW);
+  
 }
 void run_fwd(int SL, int SR){
   // Motor direito
-  if(SL > 0) {
-    analogWrite(M1, SL);
-    analogWrite(M2, LOW);
+  if(SR > 0) {
+    digitalWrite(AIN1, LOW);
+    digitalWrite(AIN2, HIGH);
+    analogWrite(PWMA, SR);
+        
   } else {
-    analogWrite(M1, LOW);
-    analogWrite(M2, abs(SL));
+    digitalWrite(AIN1, HIGH);
+    digitalWrite(AIN2, LOW);
+    analogWrite(PWMA, abs(SR));
   }
   // Motor Esquerdo
-  if(SR > 0){
-    analogWrite(M3, SR);
-    analogWrite(M4, LOW);
+  if(SL > 0){
+    digitalWrite(BIN1, LOW);
+    digitalWrite(BIN2, HIGH);
+    analogWrite(PWMB, SL);
   }else{
-    analogWrite(M3, LOW);
-    analogWrite(M4, abs(SR));
+    digitalWrite(BIN1, HIGH);
+    digitalWrite(BIN2, LOW);
+    analogWrite(PWMB, abs(SL));
   }
 }
 void SensorEq(){
   int valorSensor = analogRead(SLE);
-  int tempoInicioCurva = 0;
   // para linha preta
   if(corDaPista){
     if (valorSensor > THRESHOLD_LATERAL && curva == false){
       curva = true;
-      SerialBT.println("Curva detectada");
       tempoInicioCurva = millis();
     } 
   } else { //linha branca
     if (valorSensor < THRESHOLD_LATERAL && curva == false){
       curva = true;
-      SerialBT.println("Curva detectada");
       tempoInicioCurva = millis();
     } 
   }
@@ -424,11 +473,14 @@ void identificarInterseccao(){
     S_inter += qtrValues[i];
   }
   int media = S_inter/8;
+  // adicionar variaveis para alterar esse parametro posteriormente.
   if(corDaPista == true && media > 600){
     PID = false;
+    tempoIn = millis();
     run_fwd(velocidade_max, velocidade_max);
   }else if(corDaPista == false && media < 400){
     PID = false;
+    tempoIn = millis();
     run_fwd(velocidade_max, velocidade_max);
   } else{
     PID = true;
@@ -452,17 +504,17 @@ void salvaMemoria(){
   preferences.putFloat("kpc", KPC);
   preferences.putFloat("kdc", KDC);
   preferences.putInt("cm", contadorMarcas);
+  preferences.putInt("cdr", CDR);
   preferences.putInt("vm", velocidade_max);
   preferences.putInt("vmc", velocidade_max_curva);
   preferences.putInt("ths", THRESHOLD_LATERAL);
   preferences.end();
   SerialBT.println("KP: " + String(KP) + " | KI: " + String(KI) + " | KD: " + String(KD) + " | KPC: " + String(KPC) + " | KDC " + String(KDC));
   SerialBT.println("Velocidade_max: " + String(velocidade_max) + " | Velocidade_max_curva: " + String(velocidade_max_curva));
-  SerialBT.println("ContadorMarcas: " + String(contadorMarcas) + " | Threshold_lateral: " + String(THRESHOLD_LATERAL));
+  SerialBT.println("ContadorMarcas: " + String(contadorMarcas) + " | Threshold_lateral: " + String(THRESHOLD_LATERAL) + " | CDR: " + String(CDR/1000)+ "s");
 }
 void run_robot(){
-  SensorEq();
-  SensorDr();
+  
   uint16_t position;
   if (corDaPista) {
     position = qtr.readLineBlack(qtrValues);
@@ -470,10 +522,20 @@ void run_robot(){
     position = qtr.readLineWhite(qtrValues);
   }
   // identifica intersecçao
+
   identificarInterseccao();
+   // identifica se acabou de passar por uma interseccao
+  if(millis() - tempoIn > CDR){
+    SensorEq();
+    SensorDr();      
+  }
+  if(contadorMarcas > 0 && contadorMarcasAtual >= contadorMarcas) {
+    contagemParada();
+  }
+
+  ERRO = position - SetPoint;
   if(PID){
-    if(curva == false && contadorMarcasAtual <= contadorMarcas){
-      ERRO = position - SetPoint;
+    if(curva == false){
       Proporcional = ERRO * KP;
       Integral = (ERRO + ERRO_ANTERIOR) * KI;
       Derivativo = (ERRO - ERRO_ANTERIOR) * KD;
@@ -486,25 +548,15 @@ void run_robot(){
       }
 
       ERRO_ANTERIOR = ERRO;
-      if (contadorMarcasAtual <= contadorMarcas){
-        int SL = velocidade_max + Velocidade;
-        int SR = velocidade_max - Velocidade;
 
-        SL = constrain(SL, -velocidade_max, velocidade_max);
-        SR = constrain(SR, -velocidade_max, velocidade_max);
+      int SL = constrain(velocidade_base + Velocidade, -velocidade_max, velocidade_max);
+      int SR = constrain(velocidade_base - Velocidade, -velocidade_max,velocidade_max);
 
-        run_fwd(SL,SR);
-      } else {
-        contagemParada();
-      }
-    } else {
-      // identifica se o erro esta alto para permanecer no modo de curva
-      if(((abs(ERRO_ANTERIOR)) < 150) && (millis() - tempoInicioCurva > tempoMinimoCurva)){
+      run_fwd(SL,SR);
+    } else{
+      if(abs(ERRO) < 300 && (millis() - tempoInicioCurva > tempoMinimoCurva)){
         curva = false;
-        SerialBT.println("Modo pista ativado");
-      } else if(curva == true){
-        SerialBT.println("Modo curva ativado");
-        ERRO = position - SetPoint;
+      } else {
         Proporcional = ERRO * KPC;
         Integral = (ERRO + ERRO_ANTERIOR) * 0;
         Derivativo = (ERRO - ERRO_ANTERIOR) * KDC;
@@ -514,13 +566,8 @@ void run_robot(){
         } else if (Velocidade < -velocidade_max_curva){
           Velocidade = -velocidade_max_curva;
         }
-        ERRO_ANTERIOR = ERRO;
-        int SL = velocidade_max_curva + Velocidade;
-        int SR = velocidade_max_curva - Velocidade;
-
-        SL = constrain(SL, -velocidade_max_curva, velocidade_max_curva);
-        SR = constrain(SR, -velocidade_max_curva, velocidade_max_curva);
-
+        int SL = constrain(velocidade_base + Velocidade,-velocidade_max_curva, velocidade_max_curva);
+        int SR = constrain(velocidade_base - Velocidade,-velocidade_max_curva, velocidade_max_curva);
         run_fwd(SL,SR);
       }
     }
