@@ -50,8 +50,8 @@ int velocidade_max_curva = 80; // ajustar ainda.
 bool run = false;
 
 // Sensor lateral direito
-int THRESHOLD_LATERAL = 4000;
-int contadorMarcasAtual = 0;
+int THRESHOLD_LATERAL = 400;
+int contadorMarcasAtual = 4;
 int contadorMarcas = 0;
 bool marcaCapturada = false;
 
@@ -64,21 +64,22 @@ bool temporizadorAtivo = false;
 const int SetPoint = 3500;
 int ERRO = 0;
 int ERRO_ANTERIOR = 0;
-float KP = 0.015;
+float KP = 0.5;
 float KI = 0;
-float KD = 0.1;
+float KD = 0.15;
 float Proporcional = 0, Integral = 0, Derivativo = 0, Velocidade = 0;
 // variaveis para modo de curva e sensor esquerdo;
-float KPC = 0.3;
-float KDC = 0.2;
+float KPC = 1;
+float KDC = 0.3;
 bool curva = false;
 int tempoMinimoCurva = 300;
 unsigned long tempoInicioCurva = 0;
+int THRESHOLD_PISTA_RETA = 300;
 // Variaveis para intrepretação de intersecção
 int S_inter = 0;
 bool PID = true;
 unsigned long tempoIn = 0;
-int CDR = 300;
+int CDR = 300; // tempo para começa a conta novamente sensores laterais.
 // ---- Parametrôs para teste -----
 bool TS = false;
 bool TSU = false;
@@ -95,8 +96,9 @@ void setup() {
   // moto esquerdo
   pinMode(BIN1, OUTPUT); pinMode(BIN2, OUTPUT);
   pinMode(PWMA, OUTPUT); pinMode(PWMB, OUTPUT);
-  analogWriteFrequency(PWMA, 20000);
-  analogWriteFrequency(PWMB, 20000);
+  // posiveis alterações na frequencia para aumentar o torque do motor.
+  analogWriteFrequency(PWMA, 10000);
+  analogWriteFrequency(PWMB, 10000);
   delay(2000);
   // obetando dados da memoria
   preferences.begin("memoria", true);
@@ -107,13 +109,15 @@ void setup() {
   KDC = preferences.getFloat("kdc", KDC);
   contadorMarcas = preferences.getInt("cm", contadorMarcas);
   velocidade_max = preferences.getInt("vm", velocidade_max);
+  velocidade_base = preferences.getInt("vel", velocidade_base);
   velocidade_max_curva = preferences.getInt("vmc", velocidade_max_curva);
   THRESHOLD_LATERAL = preferences.getInt("ths", THRESHOLD_LATERAL);
+  THRESHOLD_PISTA_RETA = preferences.getInt("thsp", THRESHOLD_PISTA_RETA);
   CDR = preferences.getInt("cdr", CDR);
   preferences.end();
   SerialBT.println("KP: " + String(KP) + " | KI: " + String(KI) + " | KD: " + String(KD) + " | KPC: " + String(KPC) + " | KDC " + String(KDC));
-  SerialBT.println("Velocidade_max: " + String(velocidade_max) + " | Velocidade_max_curva: " + String(velocidade_max_curva));
-  SerialBT.println("ContadorMarcas: " + String(contadorMarcas) + " | Threshold_lateral: " + String(THRESHOLD_LATERAL) + " | CDR: " + String(CDR/1000)+"s");
+  SerialBT.println("Velocidade_base: " + String(velocidade_base) + " Velocidade_max: " + String(velocidade_max) + " | Velocidade_max_curva: " + String(velocidade_max_curva));
+  SerialBT.println("ContadorMarcas: " + String(contadorMarcas) + " | Threshold_lateral: " + String(THRESHOLD_LATERAL) + " | Threshold_Pista: " + String(THRESHOLD_PISTA_RETA) + " | CDR: " + String(CDR/1000)+"s");
 
   // configurando sensor e calibração inicial
   qtr.setTypeRC();
@@ -267,8 +271,8 @@ void processamentoCmdBluetooth(String cmd){
   }else if(cmd.startsWith("VELMAX ")){
     int val = cmd.substring(7).toInt();
     if (val >= 0){
-      if(val > 120){
-        velocidade_max = 120;
+      if(val > 225){
+        velocidade_max = 225;
         SerialBT.println("Velocidade máxima alterado para: " + String(velocidade_max));
       } else{
         velocidade_max = val;
@@ -278,8 +282,8 @@ void processamentoCmdBluetooth(String cmd){
   }else if(cmd.startsWith("VELMAXC ")){
     int val = cmd.substring(8).toInt();
     if(val >= 0){
-      if(val > 120){
-        velocidade_max_curva = 120;
+      if(val > 225){
+        velocidade_max_curva = 225;
         SerialBT.println("Velocidade máxima de curva alterado para: " + String(velocidade_max_curva));
       } else {
         velocidade_max_curva = val;
@@ -289,8 +293,8 @@ void processamentoCmdBluetooth(String cmd){
   }else if(cmd.startsWith("VEL ")){
     int val = cmd.substring(4).toInt();
     if(val >= 0){
-      if(val > 120){
-        velocidade_base = 120;
+      if(val > 225){
+        velocidade_base = 225;
         SerialBT.println("Velocidade base alterado para: " + String(velocidade_base));
       } else{
         velocidade_base = val;
@@ -319,7 +323,13 @@ void processamentoCmdBluetooth(String cmd){
     int val = cmd.substring(4).toInt();
     if (val >= 0){
       THRESHOLD_LATERAL = val;
-      SerialBT.println("Threshold lateral direito alterado para: " + String(THRESHOLD_LATERAL));
+      SerialBT.println("Threshold lateral alterado para: " + String(THRESHOLD_LATERAL));
+    }
+  }else if(cmd.startsWith("TSHP ")){
+    int val = cmd.substring(5).toInt();
+    if (val >= 0){
+      THRESHOLD_PISTA_RETA = val;
+      SerialBT.println("Threshold de pista alterado para: " + String(THRESHOLD_LATERAL));
     }
   }else if(cmd.startsWith("CMC ")){
     int val = cmd.substring(4).toInt();
@@ -329,6 +339,10 @@ void processamentoCmdBluetooth(String cmd){
     }
   } else if (cmd == "SALVAR"){
     salvaMemoria();
+  } else if (cmd == "INFO"){
+    SerialBT.println("KP: " + String(KP) + " | KI: " + String(KI) + " | KD: " + String(KD) + " | KPC: " + String(KPC) + " | KDC " + String(KDC));
+    SerialBT.println("Velocidade_base: " + String(velocidade_base) + " Velocidade_max: " + String(velocidade_max) + " | Velocidade_max_curva: " + String(velocidade_max_curva));
+    SerialBT.println("ContadorMarcas: " + String(contadorMarcas) + " | Threshold_lateral: " + String(THRESHOLD_LATERAL) + " | Threshold_Pista: " + String(THRESHOLD_PISTA_RETA) + " | CDR: " + String(CDR/1000)+"s");
   }
 }
 // funções de teste
@@ -431,7 +445,48 @@ void run_fwd(int SL, int SR){
     analogWrite(PWMB, abs(SL));
   }
 }
-void SensorEq(){
+void SensorLateral(){
+  int valorSensorE = analogRead(SLE);
+  int valorSensorD = analogRead(SLD);
+  int mediaE = 0;
+  int mediaD = 0;
+  // Filtro em ambos sensores;
+  for(int i = 0; i < 8; i++){
+    mediaE += valorSensorE;
+    mediaD += valorSensorD;
+  }
+  mediaE = (mediaE/8);
+  mediaD = (mediaD/8);
+  if(corDaPista){ // liha preta
+    // sensor esquerdo
+    if (mediaE > THRESHOLD_LATERAL && curva == false){
+      curva = true;
+      tempoInicioCurva = millis();
+    } 
+    // sensor Direito
+    if (mediaD > THRESHOLD_LATERAL && marcaCapturada == false){
+      marcaCapturada = true;
+      contadorMarcasAtual ++;
+      SerialBT.println("Marca detectada! Contagem: " + String(contadorMarcasAtual));
+    } else if (mediaD < THRESHOLD_LATERAL && marcaCapturada == true){
+      marcaCapturada = false;
+    } 
+  } else { //linha branca
+    if (mediaE < THRESHOLD_LATERAL && curva == false){
+      curva = true;
+      tempoInicioCurva = millis();
+    }
+    if (mediaD < THRESHOLD_LATERAL && marcaCapturada == false){
+      marcaCapturada = true;
+      contadorMarcasAtual ++;
+      SerialBT.println("Marca detectada! Contagem: " + String(contadorMarcasAtual));
+    } else if (mediaD > THRESHOLD_LATERAL && marcaCapturada == true){
+      marcaCapturada = false;
+    }
+  }
+}
+
+/*void SensorEq(){
   int valorSensor = analogRead(SLE);
   // para linha preta
   if(corDaPista){
@@ -466,7 +521,7 @@ void SensorDr(){
       marcaCapturada = false;
     }
   }
-}
+}*/
 void identificarInterseccao(){
   S_inter = 0;
   for (int i = 0; i < 8; i ++){
@@ -506,12 +561,14 @@ void salvaMemoria(){
   preferences.putInt("cm", contadorMarcas);
   preferences.putInt("cdr", CDR);
   preferences.putInt("vm", velocidade_max);
+  preferences.putInt("vel", velocidade_base);
   preferences.putInt("vmc", velocidade_max_curva);
   preferences.putInt("ths", THRESHOLD_LATERAL);
+  preferences.putInt("thsp", THRESHOLD_PISTA_RETA);
   preferences.end();
   SerialBT.println("KP: " + String(KP) + " | KI: " + String(KI) + " | KD: " + String(KD) + " | KPC: " + String(KPC) + " | KDC " + String(KDC));
-  SerialBT.println("Velocidade_max: " + String(velocidade_max) + " | Velocidade_max_curva: " + String(velocidade_max_curva));
-  SerialBT.println("ContadorMarcas: " + String(contadorMarcas) + " | Threshold_lateral: " + String(THRESHOLD_LATERAL) + " | CDR: " + String(CDR/1000)+ "s");
+  SerialBT.println("Velocidade_base: " + String(velocidade_base) + " Velocidade_max: " + String(velocidade_max) + " | Velocidade_max_curva: " + String(velocidade_max_curva));
+  SerialBT.println("ContadorMarcas: " + String(contadorMarcas) + " | Threshold_lateral: " + String(THRESHOLD_LATERAL) + " | Threshold_Pista: " + String(THRESHOLD_PISTA_RETA) + " | CDR: " + String(CDR/1000)+"s");
 }
 void run_robot(){
   
@@ -526,14 +583,14 @@ void run_robot(){
   identificarInterseccao();
    // identifica se acabou de passar por uma interseccao
   if(millis() - tempoIn > CDR){
-    SensorEq();
-    SensorDr();      
+    SensorLateral();   
   }
   if(contadorMarcas > 0 && contadorMarcasAtual >= contadorMarcas) {
     contagemParada();
   }
 
   ERRO = position - SetPoint;
+  // adicionar logica de retorna para a pista em caso de perca de linha
   if(PID){
     if(curva == false){
       Proporcional = ERRO * KP;
@@ -554,7 +611,7 @@ void run_robot(){
 
       run_fwd(SL,SR);
     } else{
-      if(abs(ERRO) < 300 && (millis() - tempoInicioCurva > tempoMinimoCurva)){
+      if(abs(ERRO) < THRESHOLD_PISTA_RETA && (millis() - tempoInicioCurva > tempoMinimoCurva)){
         curva = false;
       } else {
         Proporcional = ERRO * KPC;
@@ -566,6 +623,7 @@ void run_robot(){
         } else if (Velocidade < -velocidade_max_curva){
           Velocidade = -velocidade_max_curva;
         }
+        ERRO_ANTERIOR = ERRO;
         int SL = constrain(velocidade_base + Velocidade,-velocidade_max_curva, velocidade_max_curva);
         int SR = constrain(velocidade_base - Velocidade,-velocidade_max_curva, velocidade_max_curva);
         run_fwd(SL,SR);
